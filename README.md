@@ -57,7 +57,7 @@ with its clearest recording and where it spends each month, and a Discord post w
 | **Calls that draw themselves** | Play a call from the dial and it paints a ring spectrogram around the bird. Play one on a species page and it paints across the photo, in a colour taken from the photo |
 | **A page per species** | Photo, counts, when it was first heard, a fact, its range by month, the Wikipedia introduction, family and conservation status, when in the day and year it calls, its best recordings |
 | **Range maps from BirdNET itself** | BirdNET's geomodel sampled over a land grid for your region, month by month: a heatmap of where the bird is likely, your yard marked, the months you heard it dotted. Five regions to choose from |
-| **Discord** | A post for a new yard bird and for one back after a long absence, with photo, spectrogram and a link; a weekly report every Monday. Silent at night |
+| **Discord** | A post for a new yard bird and for one back after a long absence, its call a video that plays in the post, and a link; a weekly report every Monday. Silent at night |
 | **Safe to put online** | Read-only, a strict Content Security Policy, nothing loaded from third parties, a per-client rate limit, media served only for known detections. The station's coordinates never reach a browser |
 | **Light and dark, phone and desktop** | Follows the system; phones get their own layout, with no sideways scrolling |
 | **Small** | FastAPI and httpx on the server, plain JavaScript and SVG in the browser, two self-hosted fonts. One container, one SQLite file |
@@ -136,9 +136,11 @@ In the channel's settings, Integrations > Webhooks > New Webhook; copy its URL i
 
 | Post | When |
 |---|---|
-| **New yard bird** | the first detection of a species never heard before, with its number on the yard list, its photo and the spectrogram |
+| **New yard bird** | the first detection of a species never heard before, with its number on the yard list and its call: a video of its photo with the call painting across it in the bird's colour, as it does on a species page |
 | **Back** | a species heard again after `BT_COMEBACK_DAYS` away, unless the station itself was off for `BT_OUTAGE_DAYS` or more in that time |
 | **Weekly report** | Monday 01:00, for the week before: totals against the week before that, a photo strip, every day as bars, the top ten, the early bird, night owl and most loyal visitor, new arrivals, and a spotlight. An empty week sends nothing |
+
+A Back post carries the call the same way. Without ffmpeg (it's in the image) the posts show the photo and a still spectrogram instead.
 
 Every post links to its page on the site. Each one is sent once, and a weekly report missed while the
 server was down goes out when it comes back (within 12 hours).
@@ -148,7 +150,7 @@ server was down goes out when it comes back (within 12 hours).
 | `docker exec birbtrack python3 cli.py test-post` | posts a one-line test message |
 | `docker exec birbtrack python3 cli.py weekly [--week 2026-W14]` | prints a weekly report message as JSON |
 | `docker exec birbtrack python3 cli.py weekly --send` | posts last week's report now |
-| `docker exec birbtrack python3 cli.py lifer <detection id> [--send]` | prints or posts the new-yard-bird message for a detection |
+| `docker exec birbtrack python3 cli.py lifer <detection id> [--send]` | prints or posts (call video and all) the new-yard-bird message for a detection |
 
 ## Range maps
 
@@ -227,6 +229,7 @@ cd frontend && npm ci && npm run dev        # proxies /api and /media to :8894
 | `backend/app/stats.py` | every page's numbers, cached for a few seconds |
 | `backend/app/web.py` | the HTTP surface, the guard, link previews |
 | `backend/app/notify.py` | Discord posts (Components V2) |
+| `backend/app/callvideo.py` | the call videos in those posts (ffmpeg) |
 | `backend/app/ranges.py`, `place.py` | the range maps, the station's location |
 | `backend/app/images.py`, `info.py` | Avicommons photos, Wikipedia and Wikidata |
 | `frontend/src/dial.js`, `sky.js` | the dial and its sky |

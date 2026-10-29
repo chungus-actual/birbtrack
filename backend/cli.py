@@ -5,7 +5,7 @@
   docker exec birbtrack python3 cli.py test-post
       post a one-line test message to the Discord webhook
   docker exec birbtrack python3 cli.py lifer <detection id> [--send]
-      print (or post) the new-yard-bird message for a detection, to check how it looks
+      print (or post, with its call video) the new-yard-bird message for a detection, to check how it looks
 """
 
 import asyncio
@@ -34,11 +34,10 @@ def main(argv):
         print("sent" if ok else "FAILED")
     elif cmd == "lifer" and args:
         row = dict(db.conn().execute("SELECT * FROM detections WHERE id = ?", (int(args[0]),)).fetchone())
-        message = notify.detection_message(row, "lifer")
         if send:
-            print("sent" if asyncio.run(notify.post(message)) else "FAILED")
+            print("sent" if asyncio.run(notify.detection_post(row, "lifer")) else "FAILED")
         else:
-            print(json.dumps(message, indent=1, ensure_ascii=False))
+            print(json.dumps(notify.detection_message(row, "lifer"), indent=1, ensure_ascii=False))
     else:
         sys.exit(__doc__)
 

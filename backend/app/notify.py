@@ -3,24 +3,27 @@
 Messages use Discord's Components V2 layout (IS_COMPONENTS_V2, `?with_components=true`, which a
 plain channel webhook may use for non-interactive components and link buttons): a container with
 the bird's colors, sections with photo thumbnails, galleries of public photos and spectrograms,
-and link buttons into the public site. Posts in quiet hours go out silent. The `sent` table makes
-each post happen once, across restarts.
+and link buttons into the public site. A new or returning bird's call comes as a video (callvideo)
+that plays in the post. Posts in quiet hours go out silent. The `sent` table makes each post happen
+once, across restarts.
 """
 
 import asyncio
+import json
 import logging
 import time
 from datetime import date, datetime, timedelta
 
 import httpx
 
-from . import config, db, stats
+from . import callvideo, config, db, images, stats
 from .db import VISIBLE
 
 log = logging.getLogger("birbtrack.notify")
 FINCH_RED, VERDIN_GOLD, NIGHT = 0xB42E47, 0xC99410, 0x1B2150
 COMPONENTS_V2, SILENT, NO_EMBEDS = 1 << 15, 1 << 12, 1 << 2
 DAY_ABBR = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_posting = set()   # detection posts in flight (asyncio keeps only weak references to tasks)
 
 
 def url(path: str) -> str:
@@ -70,17 +73,24 @@ def photo_url(slug: str, size: int = 900) -> str:
     return url(f"/media/bird/{slug}-{size}.jpg")
 
 
-async def post(components: list) -> bool:
+async def post(components: list, files: list[tuple[str, bytes, str]] = ()) -> bool:
+    """files: (name, bytes, type) uploads, which components reach as attachment://name."""
     if not config.DISCORD_WEBHOOK:
         log.warning("no Discord webhook configured; not posting")
         return False
     flags = COMPONENTS_V2 | NO_EMBEDS | (SILENT if quiet(datetime.now(config.TZ)) else 0)
     payload = {"username": config.DISCORD_NAME, "flags": flags, "allowed_mentions": {"parse": []},
                "components": components}
-    async with httpx.AsyncClient(timeout=20) as client:
+    if files:
+        payload["attachments"] = [{"id": i, "filename": f[0]} for i, f in enumerate(files)]
+        body = {"data": {"payload_json": json.dumps(payload)},
+                "files": {f"files[{i}]": f for i, f in enumerate(files)}}
+    else:
+        body = {"json": payload}
+    async with httpx.AsyncClient(timeout=60 if files else 20) as client:
         for _ in range(3):
             r = await client.post(config.DISCORD_WEBHOOK, params={"wait": "true", "with_components": "true"},
-                                  json=payload)
+                                  **body)
             if r.status_code == 429:
                 await asyncio.sleep(min(float(r.json().get("retry_after", 2)), 30))
                 continue
@@ -93,7 +103,8 @@ async def post(components: list) -> bool:
 
 # ---- a new yard bird / back after a long absence ----
 
-def detection_message(row: dict, kind: str, days_away: int | None = None) -> list:
+def detection_message(row: dict, kind: str, days_away: int | None = None, video: str | None = None) -> list:
+    """video: the name of an uploaded call video, which stands in for the photo and spectrogram."""
     d = stats.detection(row["id"]) or {}
     common, slug = d.get("common", row["common"]), d.get("slug", db.slugify(row["common"]))
     has_photo = d.get("photo", False)
@@ -109,10 +120,13 @@ def detection_message(row: dict, kind: str, days_away: int | None = None) -> lis
         lines.append(f"\n{d['fact']}")
     when = f"**{stats.fmt_time(row['hms'])}**, {round(row['confidence'] * 100)}% sure"
     media = []
-    if has_photo:
-        media.append((photo_url(slug), common))
-    if row.get("clip"):
-        media.append((url(f"/media/spectro/{row['id']}.png"), f"Spectrogram of the {common} call"))
+    if video:
+        media.append((f"attachment://{video}", f"The {common} call"))
+    else:
+        if has_photo:
+            media.append((photo_url(slug), common))
+        if row.get("clip"):
+            media.append((url(f"/media/spectro/{row['id']}.png"), f"Spectrogram of the {common} call"))
     return [container(accent, [
         section(lines, photo_url(slug, 320) if has_photo else None, common),
         gallery(media) if media else None,
@@ -144,10 +158,33 @@ async def on_detection(row: dict):
         return
     if not await asyncio.to_thread(db.mark_sent, kind, key, int(time.time())):
         return
-    ok = await post(await asyncio.to_thread(detection_message, row, kind, days))
+    # the call video waits on its clip, so the post goes out on its own and the stream reads on
+    task = asyncio.create_task(send_detection(row, kind, key, days))
+    _posting.add(task)
+    task.add_done_callback(_posting.discard)
+
+
+async def send_detection(row: dict, kind: str, key: str, days: int | None):
+    try:
+        ok = await detection_post(row, kind, days)
+    except Exception:
+        log.exception("%s post for %s", kind, row["id"])
+        ok = False
     log.info("%s post for %s (%s): %s", kind, row["common"], row["id"], "sent" if ok else "FAILED")
     if not ok:
         await asyncio.to_thread(unmark, kind, key)
+
+
+async def detection_post(row: dict, kind: str, days_away: int | None = None) -> bool:
+    """The post, with the call as a video when one can be made, else the photo and spectrogram."""
+    name, files = None, []
+    if row.get("clip"):
+        slug = db.slugify(row["common"])
+        video = await callvideo.make(row["id"], await images.photo(slug, row["sci"], 900))
+        if video:
+            name = f"{slug}-{row['id']}.mp4"
+            files = [(name, video, "video/mp4")]
+    return await post(await asyncio.to_thread(detection_message, row, kind, days_away, name), files)
 
 
 def unmark(kind: str, key: str):

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#eef0f2" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#0b0e13" media="(prefers-color-scheme: dark)">
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <title>birbTrack</title>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <div class="frame">
+    <header class="top">
+      <a class="mark" href="/" data-link aria-label="birbTrack home">
+        <svg class="mark-glyph" viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="27"/><path d="M32 32 L32 9"/><circle class="dot" cx="32" cy="32" r="6"/></svg>
+        <span>birbTrack</span>
+      </a>
+      <nav class="nav" aria-label="Main">
+        <a href="/" data-link data-nav="today">Today</a>
+        <a href="/birds" data-link data-nav="birds">Birds</a>
+        <a href="/week/this" data-link data-nav="week">This week</a>
+      </nav>
+    </header>
+    <main id="main" tabindex="-1"></main>
+    <footer class="foot">
+      <a href="https://github.com/tphakala/birdnet-go" rel="noopener">BirdNET-Go</a>
+      <a href="https://avicommons.org" rel="noopener">Avicommons</a>
+    </footer>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

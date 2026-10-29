@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Lint
+        run: |
+          pip install -r backend/requirements.txt pyflakes
+          python -m pyflakes backend tools importer pi
+
+      - name: Build the site
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund && npm run build
+
+      - name: Boot with no BirdNET-Go
+        working-directory: backend
+        env:
+          BT_DATA: /tmp/birbtrack
+          BT_STATIC: ${{ github.workspace }}/frontend/dist
+          BT_BNG_URL: http://127.0.0.1:9
+        run: |
+          python serve.py &
+          for i in $(seq 1 30); do curl -fs http://127.0.0.1:8894/healthz && break; sleep 1; done
+          echo
+          curl -fs http://127.0.0.1:8894/ | grep -q "<title>birbTrack"
+          curl -fs http://127.0.0.1:8894/api/overview > /dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8894/api/overview)" = 405
+
+      - name: Container image
+        run: docker build -t birbtrack:ci .

@@ -1,0 +1,6 @@
+# /etc/default/birdmic - read by birdmic-rtsp.service
+BIRDMIC_DEVICE=plughw:CARD=Device,DEV=0
+BIRDMIC_PORT=8554
+BIRDMIC_MOUNT=/birdmic
+BIRDMIC_RATE=48000
+# who may connect: /etc/nftables.conf (table inet birdmic)

@@ -1,0 +1,13 @@
+**/node_modules
+**/__pycache__
+frontend/dist
+.git
+.github
+docs
+importer
+pi
+private
+tools
+*.md
+data
+birdnet-go

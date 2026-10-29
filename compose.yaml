@@ -1,0 +1,40 @@
+# birbTrack and the BirdNET-Go it reads.
+#   cp .env.example .env      (then edit it)
+#   mkdir -p data && sudo chown 1000:100 data
+#   docker compose up -d
+name: birbtrack
+
+services:
+  birdnet-go:
+    image: ghcr.io/tphakala/birdnet-go:20261014   # the release birbTrack is tested against
+    container_name: birdnet-go
+    restart: unless-stopped
+    ports:
+      - "8080:8080"         # BirdNET-Go's own UI and API: keep this one on your LAN
+    environment:
+      TZ: ${TZ:-UTC}
+      BIRDNET_UID: "1000"
+      BIRDNET_GID: "1000"
+    volumes:
+      - ./birdnet-go/config:/config
+      - ./birdnet-go/data:/data
+    # a sound card on this machine instead of an RTSP stream from a mic elsewhere:
+    # devices: ["/dev/snd:/dev/snd"]
+
+  birbtrack:
+    build: .
+    image: birbtrack:local
+    container_name: birbtrack
+    restart: unless-stopped
+    depends_on: [birdnet-go]
+    ports:
+      - "8894:8894"         # the site: point your reverse proxy here
+    env_file: .env
+    environment:
+      BT_BNG_URL: http://birdnet-go:8080
+    volumes:
+      - ./data:/data
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]

@@ -89,6 +89,20 @@ def first_seen() -> dict:
     return out
 
 
+@cached(60)
+def outages() -> list:
+    """(last call before, first call after) for every stretch of OUTAGE_DAYS or more with
+    nothing heard at all: the station was off."""
+    return [tuple(r) for r in db.conn().execute(
+        f"SELECT prev, ts FROM (SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev FROM detections "
+        f"WHERE {VISIBLE}) WHERE ts - prev >= ?", (config.OUTAGE_DAYS * 86400,))]
+
+
+def across_outage(last_ts: int, ts: int) -> bool:
+    """A bird's absence between these two calls says nothing when the station was off in it."""
+    return any(last_ts <= a and b <= ts for a, b in outages())
+
+
 def yard_number(sci: str) -> int | None:
     order = list(first_seen())
     return order.index(sci) + 1 if sci in order else None
@@ -123,15 +137,16 @@ def day(d: str) -> dict:
     present = sorted({r["sci"] for r in rows})
     before = {}
     if present:
-        before = {r[0]: r[1] for r in c.execute(
-            f"SELECT sci, MAX(day) FROM detections WHERE day < ? AND {VISIBLE} "
+        before = {r[0]: (r[1], r[2]) for r in c.execute(
+            f"SELECT sci, MAX(day), MAX(ts) FROM detections WHERE day < ? AND {VISIBLE} "
             f"AND sci IN ({','.join('?' * len(present))}) GROUP BY sci", (d, *present))}
     per = {}
     for r in rows:
         s = per.get(r["sci"])
         if s is None:
             s = per[r["sci"]] = {**card(r["sci"]), "count": 0, "first": r["hms"], "last": r["hms"],
-                                 "hourly": [0] * 24, "max_confidence": 0.0, "best": None, "_best": -1.0}
+                                 "hourly": [0] * 24, "max_confidence": 0.0, "best": None, "_best": -1.0,
+                                 "_ts": r["ts"]}
         s["count"] += 1
         s["last"] = r["hms"]
         s["hourly"][int(r["hms"][:2])] += 1
@@ -142,10 +157,12 @@ def day(d: str) -> dict:
     dd = date.fromisoformat(d)
     for sci, s in per.items():
         s.pop("_best")
+        first_ts = s.pop("_ts")
         s["lifer"] = firsts.get(sci, (None,))[0] == d
         prev = before.get(sci)
-        gap = (dd - date.fromisoformat(prev)).days if prev else None
-        s["back_after"] = gap if gap and gap >= config.COMEBACK_DAYS else None
+        gap = (dd - date.fromisoformat(prev[0])).days if prev else None
+        back = gap and gap >= config.COMEBACK_DAYS and not across_outage(prev[1], first_ts)
+        s["back_after"] = gap if back else None
         species.append(s)
     species.sort(key=lambda s: s["first"])
     index = {s["sci"]: i for i, s in enumerate(species)}
@@ -243,7 +260,7 @@ def week(key: str) -> dict:
     start, end = week_bounds(key)
     s, e = start.isoformat(), end.isoformat()
     ps, pe = (start - timedelta(days=7)).isoformat(), (start - timedelta(days=1)).isoformat()
-    rows = c.execute(f"SELECT id, day, hms, sci, confidence, clip FROM detections "
+    rows = c.execute(f"SELECT id, ts, day, hms, sci, confidence, clip FROM detections "
                      f"WHERE day BETWEEN ? AND ? AND {VISIBLE} ORDER BY ts", (s, e)).fetchall()
     prev_total, prev_species = c.execute(
         f"SELECT COUNT(*), COUNT(DISTINCT sci) FROM detections WHERE day BETWEEN ? AND ? AND {VISIBLE}",
@@ -256,7 +273,7 @@ def week(key: str) -> dict:
     for i in range(7):
         daily[(start + timedelta(days=i)).isoformat()] = 0
     for r in rows:
-        p = per.setdefault(r["sci"], {"count": 0, "max": 0.0, "sum": 0.0, "days": set()})
+        p = per.setdefault(r["sci"], {"count": 0, "max": 0.0, "sum": 0.0, "days": set(), "ts": r["ts"]})
         p["count"] += 1
         p["max"] = max(p["max"], r["confidence"])
         p["sum"] += r["confidence"]
@@ -271,11 +288,11 @@ def week(key: str) -> dict:
     returning = []
     if per:
         names = list(per)
-        for sci, last in c.execute(
-                f"SELECT sci, MAX(day) FROM detections WHERE day < ? AND {VISIBLE} "
+        for sci, last, last_ts in c.execute(
+                f"SELECT sci, MAX(day), MAX(ts) FROM detections WHERE day < ? AND {VISIBLE} "
                 f"AND sci IN ({','.join('?' * len(names))}) GROUP BY sci", (s, *names)):
             gap = (start - date.fromisoformat(last)).days
-            if gap >= config.COMEBACK_DAYS:
+            if gap >= config.COMEBACK_DAYS and not across_outage(last_ts, per[sci]["ts"]):
                 returning.append({**card(sci), "days_away": gap})
     returning.sort(key=lambda x: -x["days_away"])
 
@@ -302,7 +319,7 @@ def week(key: str) -> dict:
         "species_change": _change(len(species), prev_species),
         "species": species,
         "lifers": [card(sci) for sci in per if firsts.get(sci, ("",))[0] >= s and firsts[sci][0] <= e],
-        "new_vs_last_week": [card(sci) for sci in per if sci not in prev_set],
+        "new_vs_last_week": [card(sci) for sci in per if sci not in prev_set] if prev_total else [],
         "returning": returning[:8],
         "hourly": hourly, "peak_hour": hourly.index(max(hourly)) if rows else None,
         "daily": [{"day": d, "count": n, "species": len(day_species.get(d, ()))} for d, n in daily.items()],

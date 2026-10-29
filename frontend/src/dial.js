@@ -1,6 +1,7 @@
 // The day as a 24-hour dial: midnight at the top, one ring per species (first heard innermost),
 // one hairline tick per call, daylight shaded from sunrise to sunset, and the sun (or moon) on
-// the rim at the hero's moment: now on today, the latest call on a past day.
+// the rim at the hero's moment: now on today, the latest call on a past day. Today's calls from
+// the last few minutes burn brighter behind the hand and cool as they age.
 
 import { s, secs } from "./util.js";
 
@@ -11,6 +12,7 @@ const R_BACK = 444;
 const R_LABEL = 486;
 const R_ORB = R_BACK + 30;
 const DAY = 86400;
+const GLOW = 15 * 60;   // how long a call stays warm
 
 const angle = (t) => (t / DAY) * Math.PI * 2 - Math.PI / 2;
 const at = (t, r) => [C + r * Math.cos(angle(t)), C + r * Math.sin(angle(t))];
@@ -38,10 +40,10 @@ export function dial(day, { onHover, keyTime } = {}) {
   const n = day.species.length;
   const lane = n ? Math.min(26, (R_MAX - R_IN) / n) : (R_MAX - R_IN) / 12;
   const ring = (i) => [R_IN + i * lane, R_IN + (i + 1) * lane];
-  const label = day.total
+  const label = () => (day.total
     ? `${day.species_count} species and ${day.total} calls, placed by the time they were heard around a 24-hour clock`
-    : "No calls yet on this day";
-  const svg = s("svg", { viewBox: "-100 -100 1200 1200", class: "dial-svg", role: "img", "aria-label": label });
+    : "No calls yet on this day");
+  const svg = s("svg", { viewBox: "-100 -100 1200 1200", class: "dial-svg", role: "img", "aria-label": label() });
 
   svg.append(s("defs", {},
     s("radialGradient", { id: "dial-sun-halo" },
@@ -90,13 +92,35 @@ export function dial(day, { onHover, keyTime } = {}) {
     return g;
   });
   const byId = new Map();
-  for (const [t, i, id] of day.points) {
+  const tick = (t, i, id) => {
+    if (byId.has(id) || !groups[i]) return;
     const [r0, r1] = ring(i);
     const pad = lane * 0.18;
     groups[i].append(radial(t, r0 + pad, r1 - pad, "tick"));
     byId.set(id, [t, (r0 + r1) / 2, i]);
-  }
+  };
+  for (const [t, i, id] of day.points) tick(t, i, id);
   svg.append(lanes);
+
+  const fresh = s("g", { class: "dial-fresh", "aria-hidden": "true" });
+  svg.append(fresh);
+  let focused = null;
+  const warm = () => {
+    const now = day.is_today && keyTime ? keyTime() : null;
+    if (now == null) return;
+    const kids = [];
+    for (const [t, , i] of byId.values()) {
+      const age = Math.max(0, now - t);
+      if (age > GLOW) continue;
+      const [r0, r1] = ring(i);
+      const pad = lane * 0.18;
+      kids.push(s("g", { class: `warm ${laneClass(i)}${i === focused ? " on" : ""}`, "data-lane": i,
+        style: { "--heat": (1 - age / GLOW).toFixed(3) } },
+      radial(t, r0, r1, "halo"), radial(t, r0 + pad, r1 - pad, "core")));
+    }
+    fresh.replaceChildren(...kids);
+  };
+  warm();
 
   const hand = day.is_today ? s("g", { class: "dial-now" }) : null;
   if (hand) svg.append(hand);
@@ -117,21 +141,28 @@ export function dial(day, { onHover, keyTime } = {}) {
     if (hand) hand.replaceChildren(radial(t, R_IN - 2, R_ORB - 14, ""));
   };
   place();
-  const timer = day.is_today ? setInterval(place, 30000) : null;
+  const timer = day.is_today ? setInterval(() => { place(); warm(); }, 15000) : null;
 
   const focus = (i) => {
+    focused = i;
     svg.classList.toggle("focus", i != null);
     groups.forEach((g, j) => g.classList.toggle("on", j === i));
+    for (const w of fresh.children) w.classList.toggle("on", Number(w.dataset.lane) === i);
   };
 
   if (onHover && n) {
     const point = svg.createSVGPoint();
-    let lastHour = null;
+    let lastHour = null, lastHit = "";
+    const report = (hit) => {
+      const key = hit ? `${hit.i}:${hit.hour}` : "";
+      if (key !== lastHit) onHover(hit);
+      lastHit = key;
+    };
     const clear = () => {
       focus(null);
       hourWedge.setAttribute("d", "");
       lastHour = null;
-      onHover(null);
+      report(null);
     };
     svg.addEventListener("pointermove", (e) => {
       point.x = e.clientX;
@@ -154,7 +185,7 @@ export function dial(day, { onHover, keyTime } = {}) {
         lastHour = hour;
       }
       focus(i);
-      onHover({ i, hour });
+      report({ i, hour });
     });
     svg.addEventListener("pointerleave", clear);
   }
@@ -169,5 +200,38 @@ export function dial(day, { onHover, keyTime } = {}) {
     setTimeout(() => ripple.remove(), 2200);
   };
 
-  return { el: svg, orb, focus, pulse, refresh: place, dispose: () => clearInterval(timer) };
+  // calls heard after the dial was drawn
+  const add = (points) => {
+    for (const [t, i, id] of points) tick(t, i, id);
+    svg.setAttribute("aria-label", label());
+    warm();
+  };
+
+  // a call lands: a ripple where it fell and the hand flashes its lane's color
+  let flashTimer = 0;
+  const land = (id) => {
+    pulse(id);
+    const hit = byId.get(id);
+    if (!hit || !hand) return;
+    hand.setAttribute("class", `dial-now flash ${laneClass(hit[2])}`);
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(() => hand.setAttribute("class", "dial-now"), 1400);
+  };
+
+  // a species' first call of the day: its ring draws itself around the dial from that call
+  const grow = (i, { lifer = false } = {}) => {
+    if (!groups[i]) return;
+    const [r0, r1] = ring(i);
+    let start = DAY;
+    for (const [t, , j] of byId.values()) if (j === i) start = Math.min(start, t);
+    const c = s("circle", { cx: C, cy: C, r: f((r0 + r1) / 2), pathLength: 1, "stroke-width": f(lane * (lifer ? 0.9 : 0.6)),
+      class: `grow ${lifer ? "lifer" : laneClass(i)}`, transform: `rotate(${f((start / DAY) * 360 - 90)} ${C} ${C})` });
+    fresh.after(c);
+    setTimeout(() => c.remove(), 3400);
+  };
+
+  return {
+    el: svg, orb, focus, pulse, add, land, grow, refresh: place,
+    dispose: () => { clearInterval(timer); clearTimeout(flashTimer); },
+  };
 }

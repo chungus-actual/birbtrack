@@ -27,6 +27,8 @@ DISCORD_WEBHOOK = os.environ.get("BT_DISCORD_WEBHOOK", "")
 DISCORD_NAME = os.environ.get("BT_DISCORD_NAME", "birbTrack")
 NOTIFY = {k.strip() for k in os.environ.get("BT_NOTIFY", "lifer,comeback,weekly").split(",") if k.strip()}
 COMEBACK_DAYS = int(os.environ.get("BT_COMEBACK_DAYS", "30"))
+# this long with nothing heard at all is the station being off, not the birds being away
+OUTAGE_DAYS = int(os.environ.get("BT_OUTAGE_DAYS", "7"))
 WEEKLY_DAY = int(os.environ.get("BT_WEEKLY_DAY", "0"))      # 0 = Monday
 WEEKLY_HOUR = int(os.environ.get("BT_WEEKLY_HOUR", "1"))
 QUIET_START = int(os.environ.get("BT_QUIET_START", "22"))   # posts in quiet hours go out silent

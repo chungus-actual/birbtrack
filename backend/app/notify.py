@@ -136,6 +136,9 @@ async def on_detection(row: dict):
         days = (row["ts"] - prev) // 86400
         if days < config.COMEBACK_DAYS:
             return
+        if await asyncio.to_thread(stats.across_outage, prev, row["ts"]):
+            log.info("%s back after %d days, the station was off for part of it: no post", row["common"], days)
+            return
         kind, key = "comeback", f"{row['sci']}:{row['day']}"
     if kind not in config.NOTIFY:
         return

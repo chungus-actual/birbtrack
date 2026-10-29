@@ -68,36 +68,80 @@ function centerLatest(center, d, lastEver, ring) {
   ].filter(Boolean));
 }
 
+// the hovered ring's bird fills the disc, edged in its lane color
 function centerReadout(center, sp, hour) {
-  center.classList.remove("has-photo");
-  center.replaceChildren(
-    h("span", { class: `center-chip ${laneClass(sp._i)}` }),
-    h("span", { class: "center-name" }, sp.common),
-    h("p", { class: "center-time" }, fmtHour(hour)),
-    h("p", { class: `center-count${sp.hourly[hour] ? "" : " zero"}` }, num(sp.hourly[hour])));
+  center.classList.toggle("has-photo", sp.photo);
+  const count = h("p", { class: `center-count${sp.hourly[hour] ? "" : " zero"}` }, num(sp.hourly[hour]));
+  const name = h("span", { class: "center-name" }, sp.common);
+  const time = h("p", { class: "center-time" }, fmtHour(hour));
+  center.replaceChildren(...(sp.photo
+    ? [h("img", { src: photo(sp.slug, 320), alt: "", class: "center-bg", decoding: "async" }),
+       h("span", { class: `center-edge ${laneClass(sp._i)}`, "aria-hidden": "true" }),
+       h("div", { class: "center-cap readout" }, name, time, count)]
+    : [h("span", { class: `center-chip ${laneClass(sp._i)}` }), name, time, count]));
+}
+
+// restart a one-shot CSS animation
+function replay(el, cls) {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+}
+
+// the new bird fades in over the one it replaces
+function crossfade(center, old) {
+  const img = center.querySelector(".center-bg");
+  if (!old || !img || old.src === img.src) return;
+  old.classList.remove("tappable", "arriving");
+  old.classList.add("leaving");
+  img.classList.add("arriving");
+  img.before(old);
+  setTimeout(() => old.remove(), 1000);
 }
 
 function rollCall(d, D) {
-  const byLane = d.species.map(() => []);
-  for (const [t, i] of d.points) byLane[i].push(t);
+  const lanes = () => {
+    const byLane = d.species.map(() => []);
+    for (const [t, i] of d.points) byLane[i].push(t);
+    return byLane;
+  };
+  const byLane = lanes();
   const list = h("ol", { class: "roll", "aria-labelledby": "roll-title" });
-  d.species.forEach((sp, i) => {
+  const rows = d.species.map((sp, i) => {
     const flags = [];
     if (sp.lifer) flags.push(badge("lifer", "New yard bird"));
     if (sp.back_after) flags.push(badge("back", `Back after ${sp.back_after} days`));
+    const count = h("span", { class: "roll-count", "aria-label": plural(sp.count, "call") }, num(sp.count));
+    const bars = strip(byLane[i], laneClass(i), d.sunrise, d.sunset);
     const row = h("li", { class: `roll-row ${laneClass(i)}` },
       link(`/bird/${sp.slug}`,
         h("span", { class: "chip", "aria-hidden": "true" }),
         h("span", { class: "roll-names" }, names(sp), flags.length ? h("span", { class: "flags" }, flags) : null),
-        strip(byLane[i], laneClass(i), d.sunrise, d.sunset),
-        h("span", { class: "roll-count", "aria-label": plural(sp.count, "call") }, num(sp.count))));
+        bars, count));
     row.addEventListener("pointerenter", () => D.focus(i));
     row.addEventListener("pointerleave", () => D.focus(null));
     row.addEventListener("focusin", () => D.focus(i));
     row.addEventListener("focusout", () => D.focus(null));
     list.append(row);
+    return { row, count, bars };
   });
-  return cell({ class: "roll-cell" }, hidden("h2", "Species", "roll-title"), list);
+  // a call: counts tick over, and the caller's row lights up
+  const refresh = (sci) => {
+    const now = lanes();
+    d.species.forEach((sp, i) => {
+      const r = rows[i];
+      if (r.count.textContent !== num(sp.count)) {
+        r.count.textContent = num(sp.count);
+        r.count.setAttribute("aria-label", plural(sp.count, "call"));
+        replay(r.count, "tick");
+        const bars = strip(now[i], laneClass(i), d.sunrise, d.sunset);
+        r.bars.replaceWith(bars);
+        r.bars = bars;
+      }
+      if (sp.sci === sci) replay(r.row, "lit");
+    });
+  };
+  return { el: cell({ class: "roll-cell" }, hidden("h2", "Species", "roll-title"), list), refresh };
 }
 
 function dayView(d, { lastEver, status } = {}) {
@@ -113,18 +157,36 @@ function dayView(d, { lastEver, status } = {}) {
         || getComputedStyle(ring.box).getPropertyValue("--hero-ink").trim() || "#ffffff";
     },
   };
+  // while a call plays the disc keeps its bird
   const D = dial(d, {
     keyTime,
-    onHover: (hit) => (hit ? centerReadout(center, d.species[hit.i], hit.hour) : centerLatest(center, d, lastEver, ring)),
+    onHover: (hit) => {
+      if (dialBox.classList.contains("listening")) return;
+      if (hit) centerReadout(center, d.species[hit.i], hit.hour);
+      else centerLatest(center, d, lastEver, ring);
+    },
   });
   const day = parseDay(d.date);
   const dialBox = h("div", { class: "dial" }, D.el, center);
   ring.box = dialBox;
+  // a mouse on the dial or a call playing holds it still (mice only: a tap leaves :hover stuck)
+  let hovering = false;
+  dialBox.addEventListener("pointerenter", (e) => { hovering = e.pointerType === "mouse"; });
+  dialBox.addEventListener("pointerleave", () => { hovering = false; });
+  const busy = () => hovering || dialBox.classList.contains("listening");
   centerLatest(center, d, lastEver, ring);
-  const shown = d.latest || lastEver;
-  const caption = shown ? h("p", { class: "dial-caption" },
-    link(`/d/${shown.id}`, shown.common),
-    h("span", {}, d.latest ? fmtTime(shown.time) : `${short(shown.day)}, ${fmtTime(shown.time)}`)) : null;
+  const tally = h("p", { class: "tally" });
+  const caption = h("p", { class: "dial-caption" });
+  const fill = () => {
+    tally.hidden = !d.total;
+    tally.replaceChildren(h("span", {}, plural(d.species_count, "species", "species")),
+      h("span", {}, plural(d.total, "call")));
+    const shown = d.latest || lastEver;
+    caption.hidden = !shown;
+    caption.replaceChildren(...(shown ? [link(`/d/${shown.id}`, shown.common),
+      h("span", {}, d.latest ? fmtTime(shown.time) : `${short(shown.day)}, ${fmtTime(shown.time)}`)] : []));
+  };
+  fill();
   const hero = h("section", { class: "hero sky" },
     h("span", { class: "grain", "aria-hidden": "true" }),
     h("div", { class: "sky-in" },
@@ -133,9 +195,7 @@ function dayView(d, { lastEver, status } = {}) {
           h("span", { class: "giant-1" }, day.toLocaleDateString("en-US", { weekday: "long" })),
           h("span", { class: "giant-2" }, day.toLocaleDateString("en-US",
             d.is_today ? { month: "long", day: "numeric" } : { month: "long", day: "numeric", year: "numeric" }))),
-        d.total ? h("p", { class: "tally" },
-          h("span", {}, plural(d.species_count, "species", "species")),
-          h("span", {}, plural(d.total, "call"))) : null,
+        tally,
         status || null,
         pager(d.prev ? { href: `/day/${d.prev}`, text: short(d.prev) } : null,
           d.next ? { href: `/day/${d.next}`, text: short(d.next) } : (!d.is_today ? { href: "/", text: "Today" } : null),
@@ -151,8 +211,53 @@ function dayView(d, { lastEver, status } = {}) {
   const timer = d.is_today ? setInterval(repaint, 60000) : null;
   const onResize = () => glowFrom(hero, dialBox, D.orb);
   window.addEventListener("resize", onResize);
-  const node = h("div", { class: "day" }, hero, d.species.length ? rollCall(d, D) : null);
-  return { node, D, dispose: () => { clearInterval(timer); window.removeEventListener("resize", onResize); D.dispose(); } };
+  const roll = d.species.length ? rollCall(d, D) : null;
+  const node = h("div", { class: "day" }, hero, roll?.el);
+
+  // the newest call takes the disc once nothing holds it
+  let centerTimer = 0;
+  const showLatest = () => {
+    clearTimeout(centerTimer);
+    if (busy()) {
+      centerTimer = setTimeout(showLatest, 1000);
+      return;
+    }
+    const old = center.querySelector(".center-bg");
+    centerLatest(center, d, lastEver, ring);
+    crossfade(center, old);
+  };
+  // a call into lanes already drawn lands in place; a new species or a new day needs a new view
+  const update = (fresh, det) => {
+    if (fresh.date !== d.date || fresh.species.length !== d.species.length
+      || fresh.species.some((sp, i) => sp.sci !== d.species[i].sci)) return false;
+    fresh.species.forEach((sp, i) => { sp._i = i; });
+    Object.assign(d, fresh);
+    lastEver = det;
+    fill();
+    D.add(d.points);
+    D.land(det.id);
+    roll?.refresh(det.sci);
+    showLatest();
+    return true;
+  };
+  // the first view after new lanes: they draw themselves in, and the call lands
+  const arrive = (det, before, old) => {
+    d.species.forEach((sp, i) => { if (!before.has(sp.sci)) D.grow(i, { lifer: sp.lifer }); });
+    D.land(det.id);
+    roll?.refresh(det.sci);
+    crossfade(center, old);
+  };
+  return {
+    node, busy, update, arrive,
+    species: () => new Set(d.species.map((sp) => sp.sci)),
+    centerImg: () => center.querySelector(".center-bg"),
+    dispose: () => {
+      clearInterval(timer);
+      clearTimeout(centerTimer);
+      window.removeEventListener("resize", onResize);
+      D.dispose();
+    },
+  };
 }
 
 export async function todayPage(ctx) {
@@ -162,19 +267,58 @@ export async function todayPage(ctx) {
   let view = dayView(d, { lastEver: o.latest, status });
   root.append(view.node);
 
+  // calls heard while the tab is in the background are counted in its title
+  let unseen = 0;
+  const title = () => { document.title = unseen ? `(${unseen}) ${SITE}` : SITE; };
+  const seen = () => {
+    if (document.hidden || !unseen) return;
+    unseen = 0;
+    title();
+  };
+  document.addEventListener("visibilitychange", seen);
+
   const es = new EventSource("/api/live");
   es.addEventListener("open", () => status.classList.add("on"));
   es.addEventListener("error", () => status.classList.remove("on"));
-  es.addEventListener("detection", async (e) => {
-    const det = JSON.parse(e.data);
+  // a call into the drawn lanes lands at once; one that adds a lane waits until nothing is
+  // playing or under the mouse, then the view is redrawn around it
+  let waiting = null, held = 0, seq = 0;
+  const land = async () => {
+    held = 0;
+    if (ctx.gone() || !waiting) return;
+    const det = waiting, mine = ++seq;
+    waiting = null;
     const fresh = await get("/api/day/today").catch(() => null);
-    if (!fresh || ctx.gone()) return;
+    if (!fresh || ctx.gone() || mine !== seq) return;
+    if (view.update(fresh, det)) return;
+    if (view.busy()) {
+      waiting = waiting || det;
+      held = setTimeout(land, 1000);
+      return;
+    }
+    const before = view.species(), old = view.centerImg();
     view.dispose();
     view = dayView(fresh, { lastEver: det, status });
     root.replaceChildren(view.node);
-    view.D.pulse(det.id);
+    view.arrive(det, before, old);
+  };
+  es.addEventListener("detection", (e) => {
+    waiting = JSON.parse(e.data);
+    if (document.hidden) {
+      unseen++;
+      title();
+    }
+    if (!held) land();
   });
-  return { node: root, title: SITE, dispose: () => { es.close(); view.dispose(); } };
+  return {
+    node: root, title: SITE,
+    dispose: () => {
+      es.close();
+      clearTimeout(held);
+      document.removeEventListener("visibilitychange", seen);
+      view.dispose();
+    },
+  };
 }
 
 export async function dayPage(ctx, day) {

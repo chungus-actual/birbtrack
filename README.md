@@ -120,6 +120,7 @@ Everything is an environment variable, read from `.env` ([example](.env.example)
 | `BT_DISCORD_NAME` | `birbTrack` | the name the posts appear under |
 | `BT_NOTIFY` | `lifer,comeback,weekly` | which posts to send |
 | `BT_COMEBACK_DAYS` | `30` | how long a bird must be away for its return to be news |
+| `BT_OUTAGE_DAYS` | `7` | this long with nothing heard at all means the station was off: a bird's first call after it is not a comeback |
 | `BT_WEEKLY_DAY`, `BT_WEEKLY_HOUR` | `0`, `1` | when the weekly report goes out (0 is Monday) |
 | `BT_QUIET_START`, `BT_QUIET_END` | `22`, `7` | posts between these hours go out silent |
 | `BT_TRUSTED_PROXIES` | `172.16.0.0/12 127.0.0.0/8` | peers allowed to name the real client (your proxy) |
@@ -136,7 +137,7 @@ In the channel's settings, Integrations > Webhooks > New Webhook; copy its URL i
 | Post | When |
 |---|---|
 | **New yard bird** | the first detection of a species never heard before, with its number on the yard list, its photo and the spectrogram |
-| **Back** | a species heard again after `BT_COMEBACK_DAYS` away |
+| **Back** | a species heard again after `BT_COMEBACK_DAYS` away, unless the station itself was off for `BT_OUTAGE_DAYS` or more in that time |
 | **Weekly report** | Monday 01:00, for the week before: totals against the week before that, a photo strip, every day as bars, the top ten, the early bird, night owl and most loyal visitor, new arrivals, and a spotlight. An empty week sends nothing |
 
 Every post links to its page on the site. Each one is sent once, and a weekly report missed while the

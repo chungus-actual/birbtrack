@@ -7,6 +7,8 @@ const VIEW = 1200;            // the dial's viewBox span (-100..1100)
 const R0 = 192, R1 = 404;     // ring radii in dial units: from the disc edge across the dimmed lanes
 const F_LO = 1000, F_HI = 12000;
 const TAU = Math.PI * 2;
+const UNIT = 255 / 68;        // the floor and margin below were tuned in byte steps of a 68 dB range
+const PEAK0 = 20 * UNIT;      // full strength takes 20 dB over the band's floor, so noise alone stays faint
 
 let ctx = null;
 
@@ -32,7 +34,7 @@ const ink = ([r, g, b], level) => `rgba(${r}, ${g}, ${b}, ${Math.min(1, Math.pow
 // one level (0..1) per pitch band.
 function live({ host, audio, button, colorOf, cls, steps, fit, paint }) {
   let analyser = null, bins = null, canvas = null, g = null, raf = 0, last = null, color = [255, 255, 255];
-  let peak = 1, floor = null, n = 0;
+  let peak = PEAK0, floor = null, n = 0;
   let fadeTimer = 0;
 
   const setup = () => {
@@ -42,11 +44,10 @@ function live({ host, audio, button, colorOf, cls, steps, fit, paint }) {
       analyser = ac.createAnalyser();
       analyser.fftSize = 2048;
       analyser.smoothingTimeConstant = 0.45;
-      analyser.minDecibels = -96;
-      analyser.maxDecibels = -28;
       src.connect(analyser);
       analyser.connect(ac.destination);
-      bins = new Uint8Array(analyser.frequencyBinCount);
+      // decibels, not bytes: bytes clip at a fixed floor, and a quiet yard mic sits under it
+      bins = new Float32Array(analyser.frequencyBinCount);
     }
   };
 
@@ -62,15 +63,16 @@ function live({ host, audio, button, colorOf, cls, steps, fit, paint }) {
     canvas.classList.remove("fading");
     color = rgb(colorOf());
     last = null;
-    peak = 1;
+    peak = PEAK0;
     floor = null;
     n = 0;
   };
 
   const frame = () => {
     raf = requestAnimationFrame(frame);
-    if (!audio.duration || !analyser) return;
-    analyser.getByteFrequencyData(bins);
+    // the first frames still hold the silence before the clip, which would set the floor far too low
+    if (!audio.duration || !analyser || audio.currentTime < 0.12) return;
+    analyser.getFloatFrequencyData(bins);
     const p = audio.currentTime / audio.duration;
     const p0 = last ?? 0;
     if (p - p0 < 0.0003) return;
@@ -81,20 +83,22 @@ function live({ host, audio, button, colorOf, cls, steps, fit, paint }) {
     // each pitch band against its own noise floor (a running median: it steps toward every
     // reading), then the whole call against its loudest rise, so wind and hum sit at zero, only
     // the song paints, and quiet recordings still paint
-    const levels = new Float32Array(steps);
-    let any = 0;
+    const levels = new Float32Array(steps).fill(-200);
+    let any = -200;
     for (let k = 0; k < steps; k++) {
       for (let b = Math.floor(lo + k * per); b < lo + (k + 1) * per; b++) levels[k] = Math.max(levels[k], bins[b]);
+      levels[k] *= UNIT;
       any = Math.max(any, levels[k]);
     }
-    if (!any) return;   // the decoder hasn't started: nothing to measure yet
+    if (any <= -200 * UNIT) return;   // the decoder hasn't started: nothing to measure yet
     if (!floor) floor = Float32Array.from(levels);
-    // quick to settle in the first half second, then slow enough that a held note isn't absorbed
-    const step = 0.4 + 4 * Math.max(0, 1 - n++ / 30);
+    // quick to settle in the first half second, then slow enough that a held note isn't absorbed;
+    // the first frames only teach the floor (a clip opens on lead-in before the call)
+    const step = 0.4 + 4 * Math.max(0, 1 - n / 30);
+    for (let k = 0; k < steps; k++) floor[k] += levels[k] > floor[k] ? step : -step;
+    if (n++ < 8) return;
     for (let k = 0; k < steps; k++) {
-      const v = levels[k];
-      floor[k] += v > floor[k] ? step : -step;
-      levels[k] = Math.max(0, v - floor[k] - 5);
+      levels[k] = Math.max(0, levels[k] - floor[k] - 5);
       peak = Math.max(peak, levels[k]);
     }
     for (let k = 0; k < steps; k++) levels[k] = (levels[k] / peak - 0.12) / 0.88;
